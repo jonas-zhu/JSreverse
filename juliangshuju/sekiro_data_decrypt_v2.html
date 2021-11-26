@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+</head>
+<script>
+/*
+  Copyright (C) 2020 virjar <virjar@virjar.com> for https://github.com/virjar/sekiro
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  ARE DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
+
+function SekiroClient(wsURL) {
+    this.wsURL = wsURL;
+    this.handlers = {};
+    this.socket = {};
+    // check
+    if (!wsURL) {
+        throw new Error('wsURL can not be empty!!')
+    }
+    this.webSocketFactory = this.resolveWebSocketFactory();
+    this.connect()
+}
+
+SekiroClient.prototype.resolveWebSocketFactory = function () {
+    if (typeof window === 'object') {
+        var theWebSocket = window.WebSocket ? window.WebSocket : window.MozWebSocket;
+        return function (wsURL) {
+
+            function WindowWebSocketWrapper(wsURL) {
+                this.mSocket = new theWebSocket(wsURL);
+            }
+
+            WindowWebSocketWrapper.prototype.close = function () {
+                this.mSocket.close();
+            };
+
+            WindowWebSocketWrapper.prototype.onmessage = function (onMessageFunction) {
+                this.mSocket.onmessage = onMessageFunction;
+            };
+
+            WindowWebSocketWrapper.prototype.onopen = function (onOpenFunction) {
+                this.mSocket.onopen = onOpenFunction;
+            };
+            WindowWebSocketWrapper.prototype.onclose = function (onCloseFunction) {
+                this.mSocket.onclose = onCloseFunction;
+            };
+
+            WindowWebSocketWrapper.prototype.send = function (message) {
+                this.mSocket.send(message);
+            };
+
+            return new WindowWebSocketWrapper(wsURL);
+        }
+    }
+    if (typeof weex === 'object') {
+        // this is weex env : https://weex.apache.org/zh/docs/modules/websockets.html
+        try {
+            console.log("test webSocket for weex");
+            var ws = weex.requireModule('webSocket');
+            console.log("find webSocket for weex:" + ws);
+            return function (wsURL) {
+                try {
+                    ws.close();
+                } catch (e) {
+                }
+                ws.WebSocket(wsURL, '');
+                return ws;
+            }
+        } catch (e) {
+            console.log(e);
+            //ignore
+        }
+    }
+    //TODO support ReactNative
+    if (typeof WebSocket === 'object') {
+        return function (wsURL) {
+            return new theWebSocket(wsURL);
+        }
+    }
+    // weex �? PC环境的websocket API不完全一致，所以做了抽象兼�?
+    throw new Error("the js environment do not support websocket");
+};
+
+SekiroClient.prototype.connect = function () {
+    console.log('sekiro: begin of connect to wsURL: ' + this.wsURL);
+    var _this = this;
+    // 不check close，让
+    // if (this.socket && this.socket.readyState === 1) {
+    //     this.socket.close();
+    // }
+    try {
+        this.socket = this.webSocketFactory(this.wsURL);
+    } catch (e) {
+        console.log("sekiro: create connection failed,reconnect after 2s");
+        setTimeout(function () {
+            _this.connect()
+        }, 2000)
+    }
+
+    this.socket.onmessage(function (event) {
+        _this.handleSekiroRequest(event.data)
+    });
+
+    this.socket.onopen(function (event) {
+        console.log('sekiro: open a sekiro client connection')
+    });
+
+    this.socket.onclose(function (event) {
+        console.log('sekiro: disconnected ,reconnection after 2s');
+        setTimeout(function () {
+            _this.connect()
+        }, 2000)
+    });
+};
+
+SekiroClient.prototype.handleSekiroRequest = function (requestJson) {
+    console.log("receive sekiro request: " + requestJson);
+    var request = JSON.parse(requestJson);
+    var seq = request['__sekiro_seq__'];
+
+    if (!request['action']) {
+        this.sendFailed(seq, 'need request param {action}');
+        return
+    }
+    var action = request['action'];
+    if (!this.handlers[action]) {
+        this.sendFailed(seq, 'no action handler: ' + action + ' defined');
+        return
+    }
+
+    var theHandler = this.handlers[action];
+    var _this = this;
+    try {
+        theHandler(request, function (response) {
+            try {
+                _this.sendSuccess(seq, response)
+            } catch (e) {
+                _this.sendFailed(seq, "e:" + e);
+            }
+        }, function (errorMessage) {
+            _this.sendFailed(seq, errorMessage)
+        })
+    } catch (e) {
+        console.log("error: " + e);
+        _this.sendFailed(seq, ":" + e);
+    }
+};
+
+SekiroClient.prototype.sendSuccess = function (seq, response) {
+    var responseJson;
+    if (typeof response == 'string') {
+        try {
+            responseJson = JSON.parse(response);
+        } catch (e) {
+            responseJson = {};
+            responseJson['data'] = response;
+        }
+    } else if (typeof response == 'object') {
+        responseJson = response;
+    } else {
+        responseJson = {};
+        responseJson['data'] = response;
+    }
+
+
+    if (Array.isArray(responseJson)) {
+        responseJson = {
+            data: responseJson,
+            code: 0
+        }
+    }
+
+    if (responseJson['code']) {
+        responseJson['code'] = 0;
+    } else if (responseJson['status']) {
+        responseJson['status'] = 0;
+    } else {
+        responseJson['status'] = 0;
+    }
+    responseJson['__sekiro_seq__'] = seq;
+    var responseText = JSON.stringify(responseJson);
+    console.log("response :" + responseText);
+    this.socket.send(responseText);
+};
+
+SekiroClient.prototype.sendFailed = function (seq, errorMessage) {
+    if (typeof errorMessage != 'string') {
+        errorMessage = JSON.stringify(errorMessage);
+    }
+    var responseJson = {};
+    responseJson['message'] = errorMessage;
+    responseJson['status'] = -1;
+    responseJson['__sekiro_seq__'] = seq;
+    var responseText = JSON.stringify(responseJson);
+    console.log("sekiro: response :" + responseText);
+    this.socket.send(responseText)
+};
+
+SekiroClient.prototype.registerAction = function (action, handler) {
+    if (typeof action !== 'string') {
+        throw new Error("an action must be string");
+    }
+    if (typeof handler !== 'function') {
+        throw new Error("a handler must be function");
+    }
+    console.log("sekiro: register action: " + action);
+    this.handlers[action] = handler;
+    return this;
+};
+</script>
+
+<script type="text/javascript" src="2615.25e76adb.js"></script>
+<script type="text/javascript" src="main.d686bbe6.js"></script>
+
+<script>
+var export_function;
+
+!function() {
+    "use strict";
+    var e = {}
+      , t = {};
+    function n(a) {
+        var o = t[a];
+        if (void 0 !== o)
+            return o.exports;
+        var r = t[a] = {
+            id: a,
+            loaded: !1,
+            exports: {}
+        };
+        return e[a].call(r.exports, r, r.exports, n),
+        r.loaded = !0,
+        r.exports
+    }
+    export_function = n,
+    n.m = e,
+    n.amdD = function() {
+        throw new Error("define cannot be used indirect")
+    }
+    ,
+    function() {
+        var e = [];
+        n.O = function(t, a, o, r) {
+            if (!a) {
+                var i = 1 / 0;
+                for (d = 0; d < e.length; d++) {
+                    a = e[d][0],
+                    o = e[d][1],
+                    r = e[d][2];
+                    for (var c = !0, s = 0; s < a.length; s++)
+                        (!1 & r || i >= r) && Object.keys(n.O).every((function(e) {
+                            return n.O[e](a[s])
+                        }
+                        )) ? a.splice(s--, 1) : (c = !1,
+                        r < i && (i = r));
+                    if (c) {
+                        e.splice(d--, 1);
+                        var f = o();
+                        void 0 !== f && (t = f)
+                    }
+                }
+                return t
+            }
+            r = r || 0;
+            for (var d = e.length; d > 0 && e[d - 1][2] > r; d--)
+                e[d] = e[d - 1];
+            e[d] = [a, o, r]
+        }
+    }(),
+    n.n = function(e) {
+        var t = e && e.__esModule ? function() {
+            return e.default
+        }
+        : function() {
+            return e
+        }
+        ;
+        return n.d(t, {
+            a: t
+        }),
+        t
+    }
+    ,
+    function() {
+        var e, t = Object.getPrototypeOf ? function(e) {
+            return Object.getPrototypeOf(e)
+        }
+        : function(e) {
+            return e.__proto__
+        }
+        ;
+        n.t = function(a, o) {
+            if (1 & o && (a = this(a)),
+            8 & o)
+                return a;
+            if ("object" === typeof a && a) {
+                if (4 & o && a.__esModule)
+                    return a;
+                if (16 & o && "function" === typeof a.then)
+                    return a
+            }
+            var r = Object.create(null);
+            n.r(r);
+            var i = {};
+            e = e || [null, t({}), t([]), t(t)];
+            for (var c = 2 & o && a; "object" == typeof c && !~e.indexOf(c); c = t(c))
+                Object.getOwnPropertyNames(c).forEach((function(e) {
+                    i[e] = function() {
+                        return a[e]
+                    }
+                }
+                ));
+            return i.default = function() {
+                return a
+            }
+            ,
+            n.d(r, i),
+            r
+        }
+    }(),
+    n.d = function(e, t) {
+        for (var a in t)
+            n.o(t, a) && !n.o(e, a) && Object.defineProperty(e, a, {
+                enumerable: !0,
+                get: t[a]
+            })
+    }
+    ,
+    n.f = {},
+    n.e = function(e) {
+        return Promise.all(Object.keys(n.f).reduce((function(t, a) {
+            return n.f[a](e, t),
+            t
+        }
+        ), []))
+    }
+    ,
+    n.u = function(e) {
+        return "static/js/" + ({
+            38: "pages-universities",
+            803: "adit",
+            878: "pages-list-pages-industry",
+            1102: "pages-arithmetic-index-hot",
+            1119: "pages-list-pages-brand-pc",
+            1170: "logout",
+            1578: "component-ui-login",
+            2049: "consumption",
+            2228: "pages-foresee-detail",
+            2648: "pages-foresee-home-pc-common-category",
+            2657: "pages-list-pages-brand-mobile",
+            2676: "pages-home",
+            2771: "pages-list-pages-brand",
+            3002: "component-enhanced-header-mobile",
+            3028: "pages-login",
+            3183: "pages-content-analysis",
+            3515: "canvas-animation",
+            3702: "component-ui-login-modal",
+            3987: "common-hooks-use-web-login-sdk",
+            4052: "pages-report-detail",
+            4570: "pages-arithmetic-index-analysis",
+            4814: "pages-foresee-home-pc",
+            4880: "pages-foresee-home",
+            4904: "pages-list-pages-home",
+            5470: "pages-foresee-home-mobile",
+            5651: "pages-foresee-search",
+            5803: "pages-foresee-home-pc-best-practice",
+            5820: "pages-report-home",
+            6118: "pages-foresee-detail-mobile",
+            6494: "produce",
+            6623: "pages-home-part-five-mobile",
+            6979: "pages-foresee-home-pc-feature-story",
+            8052: "pages-foresee-detail-pc",
+            8454: "pages-arithmetic-index-home",
+            8622: "component-ui-subscription-modal",
+            8663: "creativity",
+            8815: "pages-list-pages-media",
+            9045: "engine-entry",
+            9891: "pages-help"
+        }[e] || e) + "." + {
+            38: "5e7dff34",
+            58: "585600a7",
+            149: "d306117a",
+            359: "36c724f3",
+            376: "0423cf5e",
+            378: "f0ad0e0c",
+            381: "e15023bc",
+            684: "ba43267f",
+            686: "5080a16f",
+            717: "3fc89ffb",
+            758: "b478292e",
+            803: "4de2ed53",
+            878: "d5cdab03",
+            1102: "b53a88a1",
+            1119: "54002c32",
+            1120: "4e3bb913",
+            1136: "07accab2",
+            1170: "48717975",
+            1578: "b11ec505",
+            1956: "8402ee28",
+            2049: "16cfabfe",
+            2228: "2947aadc",
+            2251: "80291afa",
+            2608: "2b547b28",
+            2648: "90bba85e",
+            2657: "b0b2725a",
+            2676: "813aa195",
+            2686: "9c443381",
+            2739: "189ce6f8",
+            2771: "35390fd7",
+            2963: "604768aa",
+            2991: "c6acc484",
+            3002: "241a8b6c",
+            3028: "9aeedb92",
+            3183: "dc960648",
+            3218: "3c82ad22",
+            3409: "302648e6",
+            3515: "35201e6e",
+            3643: "c11e73da",
+            3654: "eaa9e257",
+            3702: "7b29b536",
+            3733: "262f4c45",
+            3987: "5c01fac8",
+            4052: "f6c2b4b2",
+            4085: "353d99de",
+            4258: "14ca6810",
+            4528: "0b4db326",
+            4570: "280772c3",
+            4699: "a501dd59",
+            4814: "ea380399",
+            4880: "f4171333",
+            4904: "d46c75fe",
+            5046: "cb13ef96",
+            5114: "d4b20515",
+            5224: "0919b5ae",
+            5470: "d49de76c",
+            5493: "15acc193",
+            5649: "ea74d994",
+            5651: "13a4cb59",
+            5803: "de62abaf",
+            5820: "f814f712",
+            5832: "a77df35a",
+            5875: "aa6238c5",
+            5880: "c9419d55",
+            5966: "5d00f695",
+            6118: "a52b51cc",
+            6270: "ae569305",
+            6310: "c1f2274a",
+            6494: "506478e1",
+            6525: "0954f230",
+            6623: "63e6737f",
+            6979: "b67c22c1",
+            7162: "71d081eb",
+            7242: "7448a154",
+            7923: "9be7c086",
+            8047: "6feed29c",
+            8052: "0b2290a0",
+            8120: "f6eed967",
+            8393: "8c9b0809",
+            8454: "22b3f7dc",
+            8622: "30e027cf",
+            8663: "4dc98eb0",
+            8815: "f7bee0db",
+            8928: "f071ce0a",
+            9008: "3e2eb886",
+            9045: "d2ba8518",
+            9201: "d85fbe49",
+            9758: "888c6568",
+            9816: "cc73e3df",
+            9881: "45661872",
+            9891: "cdf5be3b",
+            9966: "fb3c2636"
+        }[e] + ".js"
+    }
+    ,
+    n.miniCssF = function(e) {
+        return "static/css/" + ({
+            38: "pages-universities",
+            179: "main",
+            878: "pages-list-pages-industry",
+            1102: "pages-arithmetic-index-hot",
+            1119: "pages-list-pages-brand-pc",
+            1578: "component-ui-login",
+            2049: "consumption",
+            2648: "pages-foresee-home-pc-common-category",
+            2657: "pages-list-pages-brand-mobile",
+            2676: "pages-home",
+            3002: "component-enhanced-header-mobile",
+            3028: "pages-login",
+            3183: "pages-content-analysis",
+            3515: "canvas-animation",
+            3702: "component-ui-login-modal",
+            4052: "pages-report-detail",
+            4570: "pages-arithmetic-index-analysis",
+            4904: "pages-list-pages-home",
+            5470: "pages-foresee-home-mobile",
+            5651: "pages-foresee-search",
+            5803: "pages-foresee-home-pc-best-practice",
+            5820: "pages-report-home",
+            6118: "pages-foresee-detail-mobile",
+            6494: "produce",
+            6623: "pages-home-part-five-mobile",
+            6979: "pages-foresee-home-pc-feature-story",
+            8052: "pages-foresee-detail-pc",
+            8454: "pages-arithmetic-index-home",
+            8622: "component-ui-subscription-modal",
+            8663: "creativity",
+            8815: "pages-list-pages-media",
+            9045: "engine-entry",
+            9891: "pages-help"
+        }[e] || e) + "." + {
+            38: "612175b1",
+            179: "9e23dc32",
+            359: "0d359670",
+            878: "31406b51",
+            1102: "7ff8b790",
+            1119: "4762d47b",
+            1120: "7c47885a",
+            1136: "0427f0a1",
+            1578: "b6551df8",
+            1956: "7e125c05",
+            2049: "d76cdfba",
+            2608: "154e0c55",
+            2615: "a82b01df",
+            2648: "06e4115b",
+            2657: "c6d7f894",
+            2676: "63e87117",
+            2686: "697eae6b",
+            2963: "b1b04a3f",
+            2991: "de1a76bd",
+            3002: "76edfc84",
+            3028: "291769b7",
+            3183: "b094dda2",
+            3515: "3837856a",
+            3654: "bf8d23a2",
+            3702: "eb3e65bf",
+            3733: "35286a8a",
+            4052: "e3bea09f",
+            4085: "d3c29946",
+            4570: "72219924",
+            4699: "5f2497f9",
+            4904: "4b144a87",
+            5470: "8eecd50f",
+            5493: "7e209477",
+            5651: "7c45ca80",
+            5803: "99b5fbd4",
+            5820: "7fce5bff",
+            5966: "b732bcea",
+            6118: "79bf4952",
+            6494: "6770eddb",
+            6623: "492cfa73",
+            6979: "4f5095a1",
+            7162: "3497d0cf",
+            7923: "b5578fab",
+            8052: "641fc725",
+            8454: "eafe4556",
+            8622: "1237bd9f",
+            8663: "3fd20e48",
+            8815: "451a3619",
+            9045: "f03101ba",
+            9758: "92c341f1",
+            9816: "d9bef1ea",
+            9891: "f5870e09"
+        }[e] + ".css"
+    }
+    ,
+    n.g = function() {
+        if ("object" === typeof globalThis)
+            return globalThis;
+        try {
+            return this || new Function("return this")()
+        } catch (e) {
+            if ("object" === typeof window)
+                return window
+        }
+    }(),
+    n.hmd = function(e) {
+        return (e = Object.create(e)).children || (e.children = []),
+        Object.defineProperty(e, "exports", {
+            enumerable: !0,
+            set: function() {
+                throw new Error("ES Modules may not assign module.exports or exports.*, Use ESM export syntax, instead: " + e.id)
+            }
+        }),
+        e
+    }
+    ,
+    n.o = function(e, t) {
+        return Object.prototype.hasOwnProperty.call(e, t)
+    }
+    ,
+    function() {
+        var e = {}
+          , t = "count-fe:";
+        n.l = function(a, o, r, i) {
+            if (e[a])
+                e[a].push(o);
+            else {
+                var c, s;
+                if (void 0 !== r)
+                    for (var f = document.getElementsByTagName("script"), d = 0; d < f.length; d++) {
+                        var u = f[d];
+                        if (u.getAttribute("src") == a || u.getAttribute("data-webpack") == t + r) {
+                            c = u;
+                            break
+                        }
+                    }
+                c || (s = !0,
+                (c = document.createElement("script")).charset = "utf-8",
+                c.timeout = 120,
+                n.nc && c.setAttribute("nonce", n.nc),
+                c.setAttribute("data-webpack", t + r),
+                c.src = a),
+                e[a] = [o];
+                var p = function(t, n) {
+                    c.onerror = c.onload = null,
+                    clearTimeout(l);
+                    var o = e[a];
+                    if (delete e[a],
+                    c.parentNode && c.parentNode.removeChild(c),
+                    o && o.forEach((function(e) {
+                        return e(n)
+                    }
+                    )),
+                    t)
+                        return t(n)
+                }
+                  , l = setTimeout(p.bind(null, void 0, {
+                    type: "timeout",
+                    target: c
+                }), 12e4);
+                c.onerror = p.bind(null, c.onerror),
+                c.onload = p.bind(null, c.onload),
+                s && document.head.appendChild(c)
+            }
+        }
+    }(),
+    n.r = function(e) {
+        "undefined" !== typeof Symbol && Symbol.toStringTag && Object.defineProperty(e, Symbol.toStringTag, {
+            value: "Module"
+        }),
+        Object.defineProperty(e, "__esModule", {
+            value: !0
+        })
+    }
+    ,
+    n.nmd = function(e) {
+        return e.paths = [],
+        e.children || (e.children = []),
+        e
+    }
+    ,
+    n.p = "//lf1-cdn-tos.bytegoofy.com/goofy/ad/count/fe/",
+    function() {
+        var e = function(e) {
+            return new Promise((function(t, a) {
+                var o = n.miniCssF(e)
+                  , r = n.p + o;
+                if (function(e, t) {
+                    for (var n = document.getElementsByTagName("link"), a = 0; a < n.length; a++) {
+                        var o = (i = n[a]).getAttribute("data-href") || i.getAttribute("href");
+                        if ("stylesheet" === i.rel && (o === e || o === t))
+                            return i
+                    }
+                    var r = document.getElementsByTagName("style");
+                    for (a = 0; a < r.length; a++) {
+                        var i;
+                        if ((o = (i = r[a]).getAttribute("data-href")) === e || o === t)
+                            return i
+                    }
+                }(o, r))
+                    return t();
+                !function(e, t, n, a) {
+                    var o = document.createElement("link");
+                    o.rel = "stylesheet",
+                    o.type = "text/css",
+                    o.onerror = o.onload = function(r) {
+                        if (o.onerror = o.onload = null,
+                        "load" === r.type)
+                            n();
+                        else {
+                            var i = r && ("load" === r.type ? "missing" : r.type)
+                              , c = r && r.target && r.target.href || t
+                              , s = new Error("Loading CSS chunk " + e + " failed.\n(" + c + ")");
+                            s.code = "CSS_CHUNK_LOAD_FAILED",
+                            s.type = i,
+                            s.request = c,
+                            o.parentNode.removeChild(o),
+                            a(s)
+                        }
+                    }
+                    ,
+                    o.href = t,
+                    document.head.appendChild(o)
+                }(e, r, t, a)
+            }
+            ))
+        }
+          , t = {
+            7252: 0
+        };
+        n.f.miniCss = function(n, a) {
+            t[n] ? a.push(t[n]) : 0 !== t[n] && {
+                38: 1,
+                359: 1,
+                878: 1,
+                1102: 1,
+                1119: 1,
+                1120: 1,
+                1136: 1,
+                1578: 1,
+                1956: 1,
+                2049: 1,
+                2608: 1,
+                2648: 1,
+                2657: 1,
+                2676: 1,
+                2686: 1,
+                2963: 1,
+                2991: 1,
+                3002: 1,
+                3028: 1,
+                3183: 1,
+                3515: 1,
+                3654: 1,
+                3702: 1,
+                3733: 1,
+                4052: 1,
+                4085: 1,
+                4570: 1,
+                4699: 1,
+                4904: 1,
+                5470: 1,
+                5493: 1,
+                5651: 1,
+                5803: 1,
+                5820: 1,
+                5966: 1,
+                6118: 1,
+                6494: 1,
+                6623: 1,
+                6979: 1,
+                7162: 1,
+                7923: 1,
+                8052: 1,
+                8454: 1,
+                8622: 1,
+                8663: 1,
+                8815: 1,
+                9045: 1,
+                9758: 1,
+                9816: 1,
+                9891: 1
+            }[n] && a.push(t[n] = e(n).then((function() {
+                t[n] = 0
+            }
+            ), (function(e) {
+                throw delete t[n],
+                e
+            }
+            )))
+        }
+    }(),
+    function() {
+        var e = {
+            7252: 0
+        };
+        n.f.j = function(t, a) {
+            var o = n.o(e, t) ? e[t] : void 0;
+            if (0 !== o)
+                if (o)
+                    a.push(o[2]);
+                else if (/^(7(162|252|923)|2686|2991|3733)$/.test(t))
+                    e[t] = 0;
+                else {
+                    var r = new Promise((function(n, a) {
+                        o = e[t] = [n, a]
+                    }
+                    ));
+                    a.push(o[2] = r);
+                    var i = n.p + n.u(t)
+                      , c = new Error;
+                    n.l(i, (function(a) {
+                        if (n.o(e, t) && (0 !== (o = e[t]) && (e[t] = void 0),
+                        o)) {
+                            var r = a && ("load" === a.type ? "missing" : a.type)
+                              , i = a && a.target && a.target.src;
+                            c.message = "Loading chunk " + t + " failed.\n(" + r + ": " + i + ")",
+                            c.name = "ChunkLoadError",
+                            c.type = r,
+                            c.request = i,
+                            o[1](c)
+                        }
+                    }
+                    ), "chunk-" + t, t)
+                }
+        }
+        ,
+        n.O.j = function(t) {
+            return 0 === e[t]
+        }
+        ;
+        var t = function(t, a) {
+            var o, r, i = a[0], c = a[1], s = a[2], f = 0;
+            if (i.some((function(t) {
+                return 0 !== e[t]
+            }
+            ))) {
+                for (o in c)
+                    n.o(c, o) && (n.m[o] = c[o]);
+                if (s)
+                    var d = s(n)
+            }
+            for (t && t(a); f < i.length; f++)
+                r = i[f],
+                n.o(e, r) && e[r] && e[r][0](),
+                e[i[f]] = 0;
+            return n.O(d)
+        }
+          , a = window.__LOADABLE_LOADED_CHUNKS__ = window.__LOADABLE_LOADED_CHUNKS__ || [];
+        a.forEach(t.bind(null, 0)),
+        a.push = t.bind(null, a.push.bind(a))
+    }()
+}();
+
+
+
+</script>
+
+
+
+
+<script>
+function guid() {
+            function S4() {
+                return (((1 + Math.random()) * 0x10000) | 0).toString(16).substring(1);
+            }
+
+            return (S4() + S4() + "-" + S4() + "-" + S4() + "-" + S4() + "-" + S4() + S4() + S4());
+        }
+
+    var client = new SekiroClient("ws://127.0.0.1:5620/business-demo/register?group=ws-group-juliang-data-decrypt&clientId=" + guid());
+
+	client.registerAction("clientTime", function (request, resolve, reject) {
+		resolve("SekiroTest ws-group-juliang-data-decrypt��" + new Date());
+	});
+
+        
+	client.registerAction("executeJs", function (request, resolve, reject) {
+		window.temp = request['param'];
+		var param = atob(request['param']);
+		if (!param) {
+			reject("need param:{param}");
+			return;
+		}
+		console.log("executeJs: " + param);
+		
+		try {
+			result = window.p_fun("next", param)
+			resolve(JSON.stringify(result));
+		} catch (e) {
+			reject("error: " + e);
+		}
+	});
+</script>
+	
+ <body>
+  </body>
+</html>

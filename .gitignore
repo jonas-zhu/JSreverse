@@ -111,9 +111,5 @@ venv.bak/
 dmypy.json
 *.csv
 *.xls
-*.txt
-*.html
 .idea/
 .zip
-.xlxs
-*.pdf

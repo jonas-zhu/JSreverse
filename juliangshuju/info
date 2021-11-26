@@ -1,0 +1,40 @@
+sekiro在js逆向上的应用
+
+MSwg6YWN572uc2VraXJv546v5aKD77yM5L2/55Soc2VraXJvIHJwY+ahhuaetuOAgu+8iHdpbmRvd++8muWuieijhWphdmHnjq/looNqZGsxLjgrbWF2ZW7vvIzlkK/liqhqdWxpYW5nc2h1anVcc2VraXJvLXJlbGVhc2UtZGVtb1xiaW5cc2VraXJvLmJhdOaWh+S7tuW8gOWQr+acjeWKoe+8ieOAgg0KICAgIGh0dHBzOi8vZ2l0aHViLmNvbS92aXJqYXIvc2VraXJvDQogICAgaHR0cHM6Ly9zZWtpcm8udmlyamFyLmNvbS9zZWtpcm8tZG9jL2luZGV4Lmh0bWwNCjIsIOS9v+eUqOa1j+iniOWZqOaJk+W8gHNla2lyb19qdWxpYW5nc2h1anUuaHRtbOaWh+S7tu+8jOWunueOsCDpk77mjqXmt7vliqBfc2lnbmF0dXJl5Y+C5pWwIOeahOi/nOeoi+iwg+eUqOOAgg0KMywg5L2/55So5rWP6KeI5Zmo5omT5byAc2VraXJvX2RhdGFfZGVjcnlwdF92Mi5odG1s5paH5Lu277yM5a6e546wIGRhdGHmlbDmja7op6Plr4Yg55qE6L+c56iL6LCD55So44CC77yI5byV55So5LqGMjYxNS4yNWU3NmFkYi5qc+WSjG1haW4uZDY4NmJiZTYuanPkuKTkuKrmlofku7bvvIkNCjTvvIzkvb/nlKjkvovlrZDvvJpkZW1vLnB5ICAgICjor7fmsYLlpLTnmoRVc2VyLUFnZW506ZyA6KaB5LiO5rWP6KeI5Zmo5LiA6Ie0KQ0K5L2/55SoaG9vayBKU09O55qE5pa55byP5om+5YiwZGF0Yeino+WvhueahOWcsOaWue+8jOaKiuino+WvhuaWueazleeahOaWueazlemAmui/h+iHquWumuS5ieeahOWFqOWxgOWvueixoeaOpeaUtu+8jOmAmui/h+iwg+eUqOi/meS4quWvueixoeWunueOsOino+WvhuOAgg==
+
+(function() {
+    //严谨模式 检查所有错误
+    'use strict';
+    //document 为要hook的对象   这里是hook的cookie
+	var cookieTemp = "";
+    Object.defineProperty(document, 'cookie', {
+		//hook set方法也就是赋值的方法
+		set: function(val) {
+				//这样就可以快速给下面这个代码行下断点
+				//从而快速定位设置cookie的代码
+				console.log('Hook捕获到cookie设置->', val);
+				cookieTemp = val;
+				return val;
+		},
+		//hook get方法也就是取值的方法
+		get: function()
+		{
+			return cookieTemp;
+		}
+    });
+    var my_stringify = JSON.stringify;
+    JSON.stringify = function(params){
+        console.log("hook", params);
+        // debugger;
+        return my_stringify(params);
+    };
+
+    var my_parse = JSON.parse;
+    JSON.parse = function(params){
+        console.log("hook", params);
+        if (params.indexOf('hot_list')){
+            debugger;
+        }
+        return my_parse(params);
+    };
+})();

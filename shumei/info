@@ -1,0 +1,5 @@
+webpack打包
+使用全局变量export_function接收webpack的加载器对象
+找出生成结果的函数，利用export_function运行，重写sendRequest函数，用于获取最后的结果
+
+
